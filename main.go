@@ -14,16 +14,18 @@ import (
 )
 
 type apiConfig struct {
-	fileserverHits  atomic.Int32
-	databaseQueries *database.Queries
+	fileserverHits atomic.Int32
+	db             *database.Queries
+	platform       string
 }
 
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
+	platform := os.Getenv("PLATFORM")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
-		fmt.Errorf("Error connecting to database: %v", err)
+		log.Fatalf("Error connecting to database: %v", err)
 	}
 	dbQueries := database.New(db)
 
@@ -32,7 +34,7 @@ func main() {
 
 	handler := http.FileServer(http.Dir(filepathRoot))
 
-	apiCfg := apiConfig{databaseQueries: dbQueries}
+	apiCfg := apiConfig{db: dbQueries, platform: platform}
 
 	mux := http.NewServeMux()
 	mux.Handle("/app/", http.StripPrefix("/app", apiCfg.middlewareMetricsInc(handler)))
@@ -40,6 +42,7 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerRequests)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 	mux.HandleFunc("POST /api/validate_chirp", apiCfg.handlerValidateChirp)
+	mux.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
 
 	srv := &http.Server{
 		Addr:    ":" + port,
@@ -64,9 +67,21 @@ func (cfg *apiConfig) handlerRequests(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
-	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
+	if cfg.platform != "dev" {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte("Reset is only allowed in dev environment."))
+		return
+	}
+
 	cfg.fileserverHits.Store(0)
+	err := cfg.db.DeleteUsers(r.Context())
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("Failed to reset the database: " + err.Error()))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Hits reset to 0 and database reset to initial state."))
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
