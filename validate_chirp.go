@@ -5,11 +5,16 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/isaacwilkinsonlongden/chirpy/internal/database"
 )
 
-func (cfg *apiConfig) handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Body string `json:"body"`
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -20,16 +25,47 @@ func (cfg *apiConfig) handlerValidateChirp(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if len(params.Body) > 140 {
+	cleanedBody, ok := validateChirp(params.Body)
+	if !ok {
 		respondWithError(w, 400, "Chirp is too long", nil)
 		return
 	}
+	params.Body = cleanedBody
 
-	type cleanedParams struct {
-		CleanedBody string `json:"cleaned_body"`
+	chirpParams := database.CreateChirpParams{
+		Body:   params.Body,
+		UserID: params.UserID,
 	}
 
-	respondWithJSON(w, 200, cleanedParams{CleanedBody: replaceBadWords(params.Body)})
+	chirp, err := cfg.db.CreateChirp(r.Context(), chirpParams)
+	if err != nil {
+		respondWithError(w, 500, "Something went wrong", err)
+		return
+	}
+
+	type returnVal struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
+	}
+
+	respondWithJSON(w, 201, returnVal{
+		ID:        chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body:      chirp.Body,
+		UserID:    chirp.UserID,
+	})
+}
+
+func validateChirp(chirp string) (string, bool) {
+	if len(chirp) > 140 {
+		return "", false
+	}
+
+	return replaceBadWords(chirp), true
 }
 
 func replaceBadWords(body string) string {
